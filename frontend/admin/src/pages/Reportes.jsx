@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import api from "../api/client";
 import StatCard from "../components/StatCard";
 import EstadoJornadaBadge from "../components/EstadoJornadaBadge";
+import { AUSENCIA_LABELS } from "../components/AusenciasCalendario";
 import { useConfig } from "../context/ConfigContext";
 import {
   ClockIcon,
@@ -9,8 +10,38 @@ import {
   CheckBadgeIcon,
   ArrowDownTrayIcon,
   BoltIcon,
+  ExclamationTriangleIcon,
+  SunIcon,
+  DocumentTextIcon,
+  HeartIcon,
 } from "@heroicons/react/24/outline";
 import { formatFecha, formatHora, hoyISO, primerDiaMesISO } from "../utils/formato";
+
+const FILA_TONO_CLASES = {
+  jornadaCompleta: "bg-secondary/5",
+  jornadaCorta: "bg-accent/5",
+  ausencia: "bg-blue-50",
+  falta: "bg-danger/5",
+};
+
+/** Green = jornada completa (incl. "salió tarde" / "entró antes"), yellow = jornada corta / sin salida. */
+function tonoJornada(j) {
+  if (!j.salida_hora) return "jornadaCorta";
+  if (j.horas_esperadas != null && j.horas_trabajadas != null && j.horas_trabajadas < j.horas_esperadas) {
+    return "jornadaCorta";
+  }
+  return "jornadaCompleta";
+}
+
+function construirFilas(reporte) {
+  if (!reporte) return [];
+  const filas = [
+    ...reporte.jornadas.map((j) => ({ tipo: "jornada", fecha: j.fecha, jornada: j })),
+    ...reporte.ausencias.map((a) => ({ tipo: "ausencia", fecha: a.fecha, ausencia: a })),
+    ...reporte.fechas_falta_injustificada.map((fecha) => ({ tipo: "falta", fecha })),
+  ];
+  return filas.sort((a, b) => a.fecha.localeCompare(b.fecha));
+}
 
 export default function Reportes() {
   const { config } = useConfig();
@@ -22,6 +53,7 @@ export default function Reportes() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [exporting, setExporting] = useState(false);
+  const filas = useMemo(() => construirFilas(reporte), [reporte]);
 
   useEffect(() => {
     api.get("/admin/tecnicos").then((res) => {
@@ -139,43 +171,101 @@ export default function Reportes() {
             <StatCard label="Puntualidad" value={`${reporte.puntualidad_pct}%`} icon={CheckBadgeIcon} tone="accent" />
           </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <StatCard
+              label="Faltas injustificadas"
+              value={reporte.dias_faltados}
+              icon={ExclamationTriangleIcon}
+              tone="danger"
+            />
+            <StatCard label="Vacaciones" value={reporte.dias_vacaciones} icon={SunIcon} tone="info" />
+            <StatCard label="Permisos" value={reporte.dias_permiso} icon={DocumentTextIcon} tone="info" />
+            <StatCard label="Incapacidad" value={reporte.dias_incapacidad} icon={HeartIcon} tone="info" />
+          </div>
+
           <div className="rounded-lg border border-border bg-surface shadow-card overflow-hidden">
             <div className="px-5 py-4 border-b border-border">
               <h2 className="font-semibold text-ink">{reporte.tecnico.nombre}</h2>
               <p className="text-sm text-ink-muted">{reporte.tecnico.email}</p>
             </div>
-            {reporte.jornadas.length === 0 ? (
-              <p className="p-5 text-ink-muted">Sin jornadas en este rango.</p>
+            {filas.length === 0 ? (
+              <p className="p-5 text-ink-muted">Sin registros en este rango.</p>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-surface-muted text-ink-muted">
                     <tr>
                       <th className="text-left font-medium px-5 py-3">Fecha</th>
+                      <th className="text-left font-medium px-5 py-3">Tipo</th>
                       <th className="text-left font-medium px-5 py-3">Entrada</th>
                       <th className="text-left font-medium px-5 py-3">Salida</th>
                       <th className="text-left font-medium px-5 py-3">Horas trabajadas</th>
                       <th className="text-left font-medium px-5 py-3">Horas esperadas</th>
                       <th className="text-left font-medium px-5 py-3">Extra</th>
                       <th className="text-left font-medium px-5 py-3">Estado</th>
+                      <th className="text-left font-medium px-5 py-3">Notas</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
-                    {reporte.jornadas.map((j) => (
-                      <tr key={j.id}>
-                        <td className="px-5 py-3 text-ink-muted">{formatFecha(j.fecha)}</td>
-                        <td className="px-5 py-3 tabular-nums text-ink-muted">{formatHora(j.entrada_hora)}</td>
-                        <td className="px-5 py-3 tabular-nums text-ink-muted">
-                          {j.salida_hora ? formatHora(j.salida_hora) : "—"}
-                        </td>
-                        <td className="px-5 py-3 tabular-nums text-ink-muted">{j.horas_trabajadas ?? "—"}</td>
-                        <td className="px-5 py-3 tabular-nums text-ink-muted">{j.horas_esperadas ?? "—"}</td>
-                        <td className="px-5 py-3 tabular-nums text-ink-muted">{j.horas_extra ?? "—"}</td>
-                        <td className="px-5 py-3">
-                          <EstadoJornadaBadge jornada={j} />
-                        </td>
-                      </tr>
-                    ))}
+                    {filas.map((fila) => {
+                      if (fila.tipo === "jornada") {
+                        const j = fila.jornada;
+                        return (
+                          <tr key={`j-${j.id}`} className={FILA_TONO_CLASES[tonoJornada(j)]}>
+                            <td className="px-5 py-3 text-ink-muted">{formatFecha(j.fecha)}</td>
+                            <td className="px-5 py-3 text-ink">Jornada</td>
+                            <td className="px-5 py-3 tabular-nums text-ink-muted">{formatHora(j.entrada_hora)}</td>
+                            <td className="px-5 py-3 tabular-nums text-ink-muted">
+                              {j.salida_hora ? formatHora(j.salida_hora) : "—"}
+                            </td>
+                            <td className="px-5 py-3 tabular-nums text-ink-muted">{j.horas_trabajadas ?? "—"}</td>
+                            <td className="px-5 py-3 tabular-nums text-ink-muted">{j.horas_esperadas ?? "—"}</td>
+                            <td className="px-5 py-3 tabular-nums text-ink-muted">{j.horas_extra ?? "—"}</td>
+                            <td className="px-5 py-3">
+                              <EstadoJornadaBadge jornada={j} />
+                            </td>
+                            <td className="px-5 py-3 text-ink-muted">—</td>
+                          </tr>
+                        );
+                      }
+                      if (fila.tipo === "ausencia") {
+                        const a = fila.ausencia;
+                        return (
+                          <tr key={`a-${a.id}`} className={FILA_TONO_CLASES.ausencia}>
+                            <td className="px-5 py-3 text-ink-muted">{formatFecha(a.fecha)}</td>
+                            <td className="px-5 py-3 text-ink">{AUSENCIA_LABELS[a.tipo] || a.tipo}</td>
+                            <td className="px-5 py-3 text-ink-muted">—</td>
+                            <td className="px-5 py-3 text-ink-muted">—</td>
+                            <td className="px-5 py-3 text-ink-muted">—</td>
+                            <td className="px-5 py-3 text-ink-muted">—</td>
+                            <td className="px-5 py-3 text-ink-muted">—</td>
+                            <td className="px-5 py-3">
+                              <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium bg-blue-100 text-blue-700">
+                                Justificada
+                              </span>
+                            </td>
+                            <td className="px-5 py-3 text-ink-muted">{a.notas || "—"}</td>
+                          </tr>
+                        );
+                      }
+                      return (
+                        <tr key={`f-${fila.fecha}`} className={FILA_TONO_CLASES.falta}>
+                          <td className="px-5 py-3 text-ink-muted">{formatFecha(fila.fecha)}</td>
+                          <td className="px-5 py-3 text-ink">Falta injustificada</td>
+                          <td className="px-5 py-3 text-ink-muted">—</td>
+                          <td className="px-5 py-3 text-ink-muted">—</td>
+                          <td className="px-5 py-3 text-ink-muted">—</td>
+                          <td className="px-5 py-3 text-ink-muted">—</td>
+                          <td className="px-5 py-3 text-ink-muted">—</td>
+                          <td className="px-5 py-3">
+                            <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium bg-danger/10 text-danger">
+                              Falta injustificada
+                            </span>
+                          </td>
+                          <td className="px-5 py-3 text-ink-muted">—</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>

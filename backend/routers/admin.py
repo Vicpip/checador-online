@@ -12,10 +12,13 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from dependencies import require_admin
-from models import Cliente, Config, Horario, Jornada, Usuario
+from models import Ausencia, Cliente, Config, Horario, Jornada, Usuario
 from schemas import (
+    AusenciaCreate,
+    AusenciaOut,
     ClienteCreate,
     ClienteOut,
+    FaltaInjustificadaOut,
     HorarioOut,
     HorarioUpsert,
     JornadaAnalisis,
@@ -37,6 +40,14 @@ ESTATUS_JORNADA_LABELS = {
     "activa": "En jornada",
     "completa": "Completa",
     "sin_salida": "Sin salida",
+}
+
+AUSENCIA_TIPO_LABELS = {
+    "falta": "Falta",
+    "vacaciones": "Vacaciones",
+    "permiso_con_goce": "Permiso con goce",
+    "permiso_sin_goce": "Permiso sin goce",
+    "incapacidad": "Incapacidad",
 }
 
 
@@ -122,6 +133,16 @@ def reporte_tecnico(
     )
     jornadas = db.scalars(stmt.order_by(Jornada.fecha)).all()
 
+    ausencias = db.scalars(
+        select(Ausencia)
+        .where(
+            Ausencia.tecnico_id == tecnico_id,
+            Ausencia.fecha >= fecha_inicio,
+            Ausencia.fecha <= fecha_fin,
+        )
+        .order_by(Ausencia.fecha)
+    ).all()
+
     config = db.get(Config, 1)
     hora_limite_cfg = config.hora_limite_entrada if config else None
     horarios_por_dia = {
@@ -168,6 +189,25 @@ def reporte_tecnico(
         hora_limite_cfg,
     )
 
+    fechas_con_jornada = {j.fecha for j in jornadas}
+    fechas_con_ausencia = {a.fecha for a in ausencias}
+    fechas_falta_injustificada = []
+    dia = fecha_inicio
+    while dia <= fecha_fin:
+        horario = horarios_por_dia.get(dia.weekday())
+        if (
+            horario is not None
+            and horario.activo
+            and dia not in fechas_con_jornada
+            and dia not in fechas_con_ausencia
+        ):
+            fechas_falta_injustificada.append(dia)
+        dia += timedelta(days=1)
+
+    dias_vacaciones = sum(1 for a in ausencias if a.tipo == "vacaciones")
+    dias_permiso = sum(1 for a in ausencias if a.tipo in ("permiso_con_goce", "permiso_sin_goce"))
+    dias_incapacidad = sum(1 for a in ausencias if a.tipo == "incapacidad")
+
     return ReporteOut(
         tecnico=TecnicoResumen(id=tecnico.id, nombre=tecnico.nombre, email=tecnico.email),
         horas_totales=horas_totales,
@@ -177,7 +217,65 @@ def reporte_tecnico(
         dias_puntuales=dias_puntuales,
         puntualidad_pct=puntualidad_pct,
         jornadas=jornadas_analisis,
+        ausencias=ausencias,
+        fechas_falta_injustificada=fechas_falta_injustificada,
+        dias_faltados=len(fechas_falta_injustificada),
+        dias_vacaciones=dias_vacaciones,
+        dias_permiso=dias_permiso,
+        dias_incapacidad=dias_incapacidad,
     )
+
+
+def _calcular_faltas_injustificadas(
+    db: Session,
+    fecha_inicio: date,
+    fecha_fin: date,
+    tecnico_id: uuid.UUID | None = None,
+) -> list[tuple[Usuario, date]]:
+    """
+    Every técnico's active weekly schedule (horarios) decides which weekdays are
+    expected workdays; a day in range only counts as an unjustified falta if it's
+    expected, in the past (today included), and has neither a jornada nor an
+    ausencia. Shared by the CSV export and the calendar-facing endpoint below —
+    same rule `reporte_tecnico` uses for a single técnico, generalized to many.
+    """
+    stmt = select(Jornada).where(Jornada.fecha >= fecha_inicio, Jornada.fecha <= fecha_fin)
+    if tecnico_id:
+        stmt = stmt.where(Jornada.tecnico_id == tecnico_id)
+    jornadas = db.scalars(stmt).all()
+
+    stmt_aus = select(Ausencia).where(Ausencia.fecha >= fecha_inicio, Ausencia.fecha <= fecha_fin)
+    if tecnico_id:
+        stmt_aus = stmt_aus.where(Ausencia.tecnico_id == tecnico_id)
+    ausencias = db.scalars(stmt_aus).all()
+
+    tecnicos_stmt = select(Usuario).where(Usuario.rol == "tecnico")
+    if tecnico_id:
+        tecnicos_stmt = tecnicos_stmt.where(Usuario.id == tecnico_id)
+    tecnicos = db.scalars(tecnicos_stmt).all()
+
+    horarios_por_tecnico_dia: dict[uuid.UUID, dict[int, Horario]] = {}
+    for h in db.scalars(select(Horario).where(Horario.activo == True)).all():  # noqa: E712
+        horarios_por_tecnico_dia.setdefault(h.tecnico_id, {})[h.dia_semana] = h
+
+    fechas_con_jornada = {(j.tecnico_id, j.fecha) for j in jornadas}
+    fechas_con_ausencia = {(a.tecnico_id, a.fecha) for a in ausencias}
+
+    hoy = date.today()
+    faltas_injustificadas: list[tuple[Usuario, date]] = []
+    for t in tecnicos:
+        horarios_dia = horarios_por_tecnico_dia.get(t.id)
+        if not horarios_dia:
+            continue
+        dia = fecha_inicio
+        while dia <= min(fecha_fin, hoy):
+            if dia.weekday() in horarios_dia and (t.id, dia) not in fechas_con_jornada and (
+                t.id,
+                dia,
+            ) not in fechas_con_ausencia:
+                faltas_injustificadas.append((t, dia))
+            dia += timedelta(days=1)
+    return faltas_injustificadas
 
 
 @router.get("/reportes/export/csv")
@@ -188,30 +286,76 @@ def exportar_reportes_csv(
     _: Usuario = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Jornada)
+    if fecha_fin is None:
+        fecha_fin = date.today()
+    if fecha_inicio is None:
+        fecha_inicio = fecha_fin.replace(day=1)
+
+    stmt = select(Jornada).where(Jornada.fecha >= fecha_inicio, Jornada.fecha <= fecha_fin)
     if tecnico_id:
         stmt = stmt.where(Jornada.tecnico_id == tecnico_id)
-    if fecha_inicio:
-        stmt = stmt.where(Jornada.fecha >= fecha_inicio)
-    if fecha_fin:
-        stmt = stmt.where(Jornada.fecha <= fecha_fin)
     jornadas = db.scalars(stmt.order_by(Jornada.fecha)).all()
 
+    stmt_aus = select(Ausencia).where(Ausencia.fecha >= fecha_inicio, Ausencia.fecha <= fecha_fin)
+    if tecnico_id:
+        stmt_aus = stmt_aus.where(Ausencia.tecnico_id == tecnico_id)
+    ausencias = db.scalars(stmt_aus.order_by(Ausencia.fecha)).all()
+
+    faltas_injustificadas = _calcular_faltas_injustificadas(db, fecha_inicio, fecha_fin, tecnico_id)
+
     zona = ZoneInfo(get_settings().business_timezone)
+    filas = []
+    for j in jornadas:
+        filas.append(
+            (
+                j.fecha,
+                j.tecnico.nombre,
+                [
+                    j.tecnico.nombre,
+                    j.fecha.strftime("%d/%m/%Y"),
+                    "Jornada",
+                    j.entrada_hora.astimezone(zona).strftime("%H:%M"),
+                    j.salida_hora.astimezone(zona).strftime("%H:%M") if j.salida_hora else "",
+                    j.horas_trabajadas if j.horas_trabajadas is not None else "",
+                    ESTATUS_JORNADA_LABELS.get(j.estatus, j.estatus),
+                    "",
+                ],
+            )
+        )
+    for a in ausencias:
+        filas.append(
+            (
+                a.fecha,
+                a.tecnico.nombre,
+                [
+                    a.tecnico.nombre,
+                    a.fecha.strftime("%d/%m/%Y"),
+                    AUSENCIA_TIPO_LABELS.get(a.tipo, a.tipo),
+                    "",
+                    "",
+                    "",
+                    "",
+                    a.notas or "",
+                ],
+            )
+        )
+    for t, fecha in faltas_injustificadas:
+        filas.append(
+            (
+                fecha,
+                t.nombre,
+                [t.nombre, fecha.strftime("%d/%m/%Y"), "Falta injustificada", "", "", "", "", ""],
+            )
+        )
+    filas.sort(key=lambda f: (f[0], f[1]))
+
     buffer = io.StringIO()
     writer = csv.writer(buffer)
-    writer.writerow(["Técnico", "Fecha", "Entrada", "Salida", "Horas trabajadas", "Estatus"])
-    for j in jornadas:
-        writer.writerow(
-            [
-                j.tecnico.nombre,
-                j.fecha.strftime("%d/%m/%Y"),
-                j.entrada_hora.astimezone(zona).strftime("%H:%M"),
-                j.salida_hora.astimezone(zona).strftime("%H:%M") if j.salida_hora else "",
-                j.horas_trabajadas if j.horas_trabajadas is not None else "",
-                ESTATUS_JORNADA_LABELS.get(j.estatus, j.estatus),
-            ]
-        )
+    writer.writerow(
+        ["Técnico", "Fecha", "Tipo", "Entrada", "Salida", "Horas trabajadas", "Estatus", "Notas"]
+    )
+    for _, _, fila in filas:
+        writer.writerow(fila)
     buffer.seek(0)
 
     return StreamingResponse(
@@ -322,6 +466,90 @@ def actualizar_horarios(
     for h in nuevos:
         db.refresh(h)
     return sorted(nuevos, key=lambda h: h.dia_semana)
+
+
+# ── Ausencias ────────────────────────────────────────────────────────────
+@router.get("/ausencias", response_model=list[AusenciaOut])
+def listar_ausencias(
+    tecnico_id: uuid.UUID | None = None,
+    fecha_inicio: date | None = None,
+    fecha_fin: date | None = None,
+    _: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    stmt = select(Ausencia)
+    if tecnico_id:
+        stmt = stmt.where(Ausencia.tecnico_id == tecnico_id)
+    if fecha_inicio:
+        stmt = stmt.where(Ausencia.fecha >= fecha_inicio)
+    if fecha_fin:
+        stmt = stmt.where(Ausencia.fecha <= fecha_fin)
+    return db.scalars(stmt.order_by(Ausencia.fecha)).all()
+
+
+@router.post("/ausencias", response_model=AusenciaOut, status_code=status.HTTP_201_CREATED)
+def crear_ausencia(
+    body: AusenciaCreate,
+    admin: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    if db.get(Usuario, body.tecnico_id) is None:
+        raise HTTPException(status_code=404, detail="Usuario not found")
+
+    jornada_existente = db.scalar(
+        select(Jornada).where(Jornada.tecnico_id == body.tecnico_id, Jornada.fecha == body.fecha)
+    )
+    if jornada_existente is not None:
+        raise HTTPException(
+            status_code=409, detail="Ya existe una jornada para ese técnico en esa fecha"
+        )
+
+    ausencia_existente = db.scalar(
+        select(Ausencia).where(Ausencia.tecnico_id == body.tecnico_id, Ausencia.fecha == body.fecha)
+    )
+    if ausencia_existente is not None:
+        raise HTTPException(
+            status_code=409, detail="Ya existe una ausencia para ese técnico en esa fecha"
+        )
+
+    ausencia = Ausencia(
+        tecnico_id=body.tecnico_id,
+        fecha=body.fecha,
+        tipo=body.tipo,
+        notas=body.notas,
+        creado_por=admin.id,
+    )
+    db.add(ausencia)
+    db.commit()
+    db.refresh(ausencia)
+    return ausencia
+
+
+@router.get("/ausencias/faltas-injustificadas", response_model=list[FaltaInjustificadaOut])
+def listar_faltas_injustificadas(
+    fecha_inicio: date,
+    fecha_fin: date,
+    tecnico_id: uuid.UUID | None = None,
+    _: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Auto-detected unjustified faltas in range, across técnicos — for the Calendario view."""
+    faltas = _calcular_faltas_injustificadas(db, fecha_inicio, fecha_fin, tecnico_id)
+    return [
+        FaltaInjustificadaOut(tecnico_id=t.id, tecnico_nombre=t.nombre, fecha=fecha)
+        for t, fecha in faltas
+    ]
+
+
+@router.delete("/ausencias/{ausencia_id}", status_code=status.HTTP_204_NO_CONTENT)
+def eliminar_ausencia(
+    ausencia_id: uuid.UUID, _: Usuario = Depends(require_admin), db: Session = Depends(get_db)
+):
+    ausencia = db.get(Ausencia, ausencia_id)
+    if ausencia is None:
+        raise HTTPException(status_code=404, detail="Ausencia not found")
+    db.delete(ausencia)
+    db.commit()
 
 
 # ── Clientes ─────────────────────────────────────────────────────────────

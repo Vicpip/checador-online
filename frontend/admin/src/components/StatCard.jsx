@@ -3,6 +3,8 @@ export default function StatCard({ label, value, icon: Icon, tone = "primary" })
     primary: "bg-primary/10 text-primary",
     secondary: "bg-secondary/10 text-secondary",
     accent: "bg-accent/10 text-accent",
+    danger: "bg-danger/10 text-danger",
+    info: "bg-blue-100 text-blue-700",
   };
 
   return (

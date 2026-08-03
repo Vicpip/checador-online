@@ -68,6 +68,43 @@ class Horario(Base):
     tecnico: Mapped["Usuario"] = relationship(foreign_keys=[tecnico_id])
 
 
+class Ausencia(Base):
+    """
+    Recorded time-off / absence for a técnico on a given date. Kept separate
+    from `jornadas` (no FK, same decoupling rationale as jornadas/servicios) —
+    a técnico has *either* a jornada *or* an ausencia on a given day, never
+    both; the admin router enforces this at creation time (409 if a jornada
+    already exists for that tecnico_id/fecha). See utils/puntualidad.py and
+    routers/admin.py::reporte_tecnico for how the reportes endpoint uses this
+    to distinguish justified absences from `falta_injustificada`.
+    """
+
+    __tablename__ = "ausencias"
+    __table_args__ = (
+        UniqueConstraint("tecnico_id", "fecha", name="uq_ausencias_tecnico_fecha"),
+        CheckConstraint(
+            "tipo IN ('falta','vacaciones','permiso_con_goce','permiso_sin_goce','incapacidad')",
+            name="ck_ausencias_tipo",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tecnico_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("usuarios.id"), nullable=False, index=True
+    )
+    fecha: Mapped[date] = mapped_column(Date, nullable=False)
+    tipo: Mapped[str] = mapped_column(String(30), nullable=False)
+    notas: Mapped[str | None] = mapped_column(Text, nullable=True)
+    creado_por: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("usuarios.id"), nullable=False
+    )
+    creado_en: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    tecnico: Mapped["Usuario"] = relationship(foreign_keys=[tecnico_id])
+
+
 class Jornada(Base):
     __tablename__ = "jornadas"
     __table_args__ = (

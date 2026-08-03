@@ -39,11 +39,13 @@ field-check/
 │   ├── utils/              fotos.py (photo/logo storage), geo.py, puntualidad.py, security.py
 │   └── alembic/versions/   0001 initial (5 tables + seeded config), 0002 TIMESTAMPTZ columns,
 │                           0003 servicios.hora, 0004 config working-hours columns,
-│                           0005 horarios table (per-técnico expected weekly schedule)
+│                           0005 horarios table (per-técnico expected weekly schedule),
+│                           0006 ausencias table (absences / time-off)
 ├── frontend/
 │   ├── admin/src/          pages/ (Dashboard, Jornadas, Reportes, Calendario, Usuarios,
 │   │                       Clientes, Configuracion, Login), components/ (EditarPerfilModal,
-│   │                       MapaModal, EstadoJornadaBadge, PhotoModal, Badge, StatCard, …),
+│   │                       AusenciasCalendario, MapaModal, EstadoJornadaBadge, PhotoModal,
+│   │                       Badge, StatCard, …),
 │   │                       context/ (Auth, Config), api/client.js
 │   └── pwa/src/            pages/ (Login, Jornada, MisServicios), components/ (CamaraCheckin,
 │                           EstadoJornada), hooks/useGeolocation.js, utils/comprimirFoto.js
@@ -55,9 +57,11 @@ field-check/
 
 Every endpoint in `CONTEXT_CHECADOR.md` is implemented, plus the branding endpoints the user
 requested on top of the spec, plus employee weekly schedules / jornada hours analysis / the
-check-in location map documented below. Both frontends are complete and **build cleanly**
-(`npm run build` verified for both `frontend/admin` and `frontend/pwa` — 0 errors; re-verified for
-`frontend/admin` after adding `leaflet`/`react-leaflet`). Backend
+check-in location map / absences & time-off management documented below. Both frontends are
+complete and **build cleanly** (`npm run build` verified for both `frontend/admin` and
+`frontend/pwa` — 0 errors; re-verified for `frontend/admin` after adding `leaflet`/`react-leaflet`,
+again after adding the absences feature, and again after wiring absences into Reportes' row
+coloring, Calendario, and Dashboard — see feature 5 below). Backend
 verified with `python -m py_compile` on every file (full `pip install` wasn't run locally — this
 machine has Python 3.14, which pydantic-core/psycopg2 don't yet ship wheels for; the Docker image
 pins `python:3.11-slim`, which is the actually-supported target and should install cleanly there —
@@ -167,6 +171,107 @@ hardcode a hex value in a component.
   by this feature — they were not previously a dependency. "No API key needed" (OpenStreetMap tiles
   are free/unauthenticated) is a different claim from "already installed"; don't conflate the two
   if extending this further.
+
+### 4. Absences / time-off management (added 2026-08-03)
+- New `ausencias` table (migration `0006`, model `Ausencia` in `models.py`): one row per
+  (`tecnico_id`, `fecha`), `tipo` CHECK-constrained to `falta | vacaciones | permiso_con_goce |
+  permiso_sin_goce | incapacidad`, plus `notas` (free text) and `creado_por` (the admin who
+  registered it). `jornadas` and `ausencias` are intentionally never both present for the same
+  técnico/fecha — same decoupling instinct as `jornadas`/`servicios`, but here it's enforced, not
+  just conventional: `POST /admin/ausencias` (`routers/admin.py::crear_ausencia`) returns 409 if a
+  `jornada` already exists for that técnico/fecha, and again 409 if an `ausencia` already does
+  (`UNIQUE(tecnico_id, fecha)` backs the second check). `DELETE /admin/ausencias/{id}` and
+  `GET /admin/ausencias?tecnico_id=&fecha_inicio=&fecha_fin=` round out the CRUD.
+- **`falta_injustificada` detection** (`routers/admin.py::reporte_tecnico`): for each calendar day
+  in the reportes range, a day only counts as an unjustified falta if the técnico has an **active
+  `horario`** for that weekday (i.e. it's expected to be a workday per their own schedule — see
+  post-1.0 feature 1) *and* there's no `jornada` *and* no `ausencia` on it. A técnico with no
+  `horario` configured for a weekday (or no schedule at all) never gets flagged for that day — this
+  deliberately reuses the same "no horario ⇒ no basis for comparison" rule that already governs
+  `horas_esperadas` being `None`, rather than hardcoding a Mon–Fri assumption that would ignore
+  custom (e.g. Saturday-only) schedules. `GET /admin/reportes` now also returns `ausencias` (the
+  raw records in range), `fechas_falta_injustificada` (the computed date list), and
+  `dias_faltados` / `dias_vacaciones` / `dias_permiso` / `dias_incapacidad` summary counts —
+  `dias_faltados` counts only the auto-detected empty days, not `ausencia` rows with `tipo='falta'`
+  (an admin-recorded falta is, definitionally, no longer *unjustified* once it's on record — it
+  just doesn't roll up into any of the four summary buckets beyond appearing in `ausencias`).
+- `GET /admin/reportes/export/csv` gained `Tipo` (`Jornada` / the `AUSENCIA_TIPO_LABELS` value /
+  `Falta injustificada`) and `Notas` columns, with one row per jornada, ausencia, and detected
+  unjustified-falta day, chronologically merged. Unlike `/admin/reportes` (which requires a single
+  `tecnico_id`), this endpoint's `tecnico_id` is optional — when omitted, the falta-detection loop
+  runs per técnico (`rol='tecnico'`) using each one's own `horarios`, not a single shared schedule.
+- Admin UI: `components/AusenciasCalendario.jsx`, embedded in `EditarPerfilModal.jsx` under a new
+  "Ausencias" section (below the weekly-schedule grid). Renders one month at a time as a 7-column
+  grid (Lun–Dom, Python `weekday()` order to match `horarios.dia_semana`) fetching that técnico's
+  `/admin/jornadas` + `/admin/ausencias` for the visible month. Cell color: green = jornada
+  completa, yellow = jornada sin `salida_hora`, red = falta injustificada (workday, no record, not
+  in the future), blue = ausencia registrada, gray = not a scheduled workday or a future date.
+  Clicking a day with no jornada and no ausencia (red or gray) opens a small form to pick `tipo` +
+  optional `notas` and `POST`s it; clicking a blue (ausencia) day opens a view/delete popover
+  (`DELETE /admin/ausencias/{id}`) — this delete affordance isn't explicitly spec'd but was added
+  since the backend endpoint would otherwise have no UI path. Days with a jornada aren't clickable.
+  The brief's two UI options for this were "a button per Jornadas-page row gap" vs. "better: a
+  calendar in the Editar perfil modal" — only the second (explicitly called out as preferred) was
+  built; there is no "Agregar ausencia" button on `pages/Jornadas.jsx`.
+- `pages/Reportes.jsx`: added a second stat-card row (`Faltas injustificadas` / `Vacaciones` /
+  `Permisos` / `Incapacidad`, from the new `ReporteOut` counts) and replaced the jornadas-only table
+  with one merged, chronologically-sorted table over jornadas + ausencias + detected unjustified
+  faltas, each row tinted by category (`FILA_TONO_CLASES` in `Reportes.jsx`: light secondary for
+  jornadas, light blue for ausencias, light danger for unjustified faltas) so the three categories
+  are visually distinguishable at a glance, per the brief. `StatCard` gained two tone variants
+  (`danger`, `info`) to support this — `info` is a plain Tailwind blue, not a CSS-variable brand
+  token, since it's a fixed status color (matches the "blue = ausencia" convention in the calendar
+  above), not something a deployment should be able to re-brand.
+
+### 5. Absences — full frontend integration (Reportes/Usuarios fixes, Calendario, Dashboard) (2026-08-03)
+- `pages/Reportes.jsx`: the merged jornadas+ausencias+faltas table and the second stat-card row
+  (`Faltas injustificadas`/`Vacaciones`/`Permisos`/`Incapacidad`) already existed from feature 4
+  above; the one real gap was that every jornada row shared one color regardless of how the jornada
+  actually went. `tonoJornada()` now buckets each jornada into `jornadaCompleta` (green,
+  `bg-secondary/5`) or `jornadaCorta` (yellow, `bg-accent/5`, no `salida_hora` or
+  `horas_trabajadas < horas_esperadas`) — deliberately a coarser 2-way split than
+  `EstadoJornadaBadge`'s 4-state `evaluar()` (which still drives the finer-grained Estado badge in
+  the same row): "llegó tarde"/"salió antes"/"salió después" don't change row color, only
+  completeness does, per the brief's green/yellow split.
+- `components/AusenciasCalendario.jsx` / `components/EditarPerfilModal.jsx`: the calendar was
+  already wired into "Editar perfil" and functionally worked, but had two rough edges fixed here:
+  (1) the section heading is now literally "Gestión de ausencias" (was "Ausencias"); (2)
+  `AUSENCIA_LABELS.falta` is now "Falta justificada" (was "Falta") — clearer in the tipo dropdown
+  and everywhere else this shared label map is consumed (Reportes, Dashboard, Calendario). Also:
+  `FormularioAusencia`'s inline "register an ausencia" popover was a real `<form>` nested inside
+  `EditarPerfilModal`'s outer `<form>` — invalid HTML (nested forms), fixed by converting it to a
+  plain `<div>` with an `onClick`-driven submit button instead of `type="submit"`.
+- `components/AusenciaModal.jsx` (new) + `pages/Calendario.jsx`: added a "+ Registrar ausencia"
+  button next to "+ Nuevo servicio" that opens a técnico/tipo/fecha(+fecha opcional "hasta" for
+  vacaciones)/notas form. Since `ausencias` is one row per (tecnico_id, fecha) with no range concept
+  server-side, a "Desde/Hasta" vacaciones range is submitted as one `POST /admin/ausencias` per day
+  in the range (`handleSaveAusencia` in `Calendario.jsx`) — not a new bulk endpoint.
+  FullCalendar events are now merged from three sources per visible range: `/admin/servicios`
+  (unchanged), `/admin/ausencias` (tinted per `tipo`: vacaciones blue `#3b82f6`, both permiso types
+  purple `#a855f7`, incapacidad orange `#f97316`, falta `var(--color-danger)`), and the new
+  `/admin/ausencias/faltas-injustificadas` (below) for auto-detected red events. Every event carries
+  `extendedProps.kind` (`servicio`/`ausencia`/`falta`) so `eventClick` can dispatch correctly:
+  `servicio` opens `ServicioModal`, `ausencia` prompts `window.confirm` + `DELETE
+  /admin/ausencias/{id}`, `falta` is inert (nothing to edit — it's computed, not a row).
+- `pages/Dashboard.jsx`: new "Ausencias hoy" card below the existing 4 `StatCard`s — lists técnicos
+  with an ausencia today whose `tipo` is `vacaciones`/`permiso_con_goce`/`permiso_sin_goce`/
+  `incapacidad` (deliberately excludes `tipo='falta'` — a justified-after-the-fact falta isn't "time
+  off" in the sense this widget is describing). Falls back to "Todos los {worker_role_label}s
+  disponibles hoy." when the filtered list is empty. Técnico names are resolved client-side from the
+  already-fetched `/admin/tecnicos` list since `AusenciaOut` only carries `tecnico_id`.
+- **New backend endpoint**: `GET /admin/ausencias/faltas-injustificadas?fecha_inicio=&fecha_fin=&tecnico_id=`
+  (`routers/admin.py`, schema `FaltaInjustificadaOut`) — the only piece of this feature that needed a
+  backend change. Calendario needs auto-detected unjustified-falta events across *all* técnicos for
+  a visible month, which nothing previously exposed (`/admin/reportes` is single-técnico;
+  `/admin/reportes/export/csv` computes the multi-técnico version inline but only as CSV rows). The
+  shared computation was extracted into `_calcular_faltas_injustificadas()` (same
+  horarios/jornadas/ausencias rule as `reporte_tecnico`, generalized to many técnicos) and the CSV
+  export now calls it too instead of duplicating the loop. One behavior change from the extraction:
+  the helper caps its scan at `min(fecha_fin, hoy)` — a future date can never be an unjustified
+  falta — which the CSV export's inline loop didn't previously guard against (harmless there in
+  practice since CSV exports are rarely run for future ranges, but load-bearing for Calendario, whose
+  visible month routinely includes future days). `reporte_tecnico`'s own single-técnico loop was
+  intentionally left as-is (not extracted) to avoid changing Reportes.jsx behavior outside this ask.
 
 ## Hard rules (do not violate these — see CONTEXT_CHECADOR.md for the full rationale)
 

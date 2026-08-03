@@ -1,6 +1,7 @@
 import { XMarkIcon } from "@heroicons/react/24/outline";
 import { useEffect, useState } from "react";
 import api from "../api/client";
+import AusenciasCalendario from "./AusenciasCalendario";
 
 const DIAS = [
   { value: 0, label: "Lunes" },
@@ -178,6 +179,13 @@ export default function EditarPerfilModal({ usuario, onClose, onSaved }) {
               Se usa para comparar horas trabajadas vs. esperadas en Reportes. Domingo no se
               considera día laboral en este sistema.
             </p>
+          </div>
+
+          <div>
+            <h4 className="text-sm font-semibold text-ink mb-2">Gestión de ausencias</h4>
+            <div className="rounded-lg border border-border p-4">
+              <AusenciasCalendario tecnicoId={usuario.id} horarios={horarios} />
+            </div>
           </div>
 
           {error && (

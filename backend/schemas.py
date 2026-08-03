@@ -58,6 +58,38 @@ class HorarioOut(HorarioUpsert):
     tecnico_id: uuid.UUID
 
 
+# ── Ausencias ─────────────────────────────────────────────────────────────
+AUSENCIA_TIPO_PATTERN = "^(falta|vacaciones|permiso_con_goce|permiso_sin_goce|incapacidad)$"
+
+
+class AusenciaCreate(BaseModel):
+    tecnico_id: uuid.UUID
+    fecha: date
+    tipo: str = Field(pattern=AUSENCIA_TIPO_PATTERN)
+    notas: str | None = None
+
+
+class AusenciaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    tecnico_id: uuid.UUID
+    fecha: date
+    tipo: str
+    notas: str | None
+    creado_por: uuid.UUID
+    creado_en: datetime
+
+
+class FaltaInjustificadaOut(BaseModel):
+    """An auto-detected unjustified falta — no DB row, computed on the fly. See
+    routers/admin.py::_calcular_faltas_injustificadas."""
+
+    tecnico_id: uuid.UUID
+    tecnico_nombre: str
+    fecha: date
+
+
 # ── Clientes ──────────────────────────────────────────────────────────────
 class ClienteBase(BaseModel):
     nombre: str
@@ -172,6 +204,12 @@ class ReporteOut(BaseModel):
     dias_puntuales: int
     puntualidad_pct: float
     jornadas: list[JornadaAnalisis]
+    ausencias: list[AusenciaOut]
+    fechas_falta_injustificada: list[date]
+    dias_faltados: int
+    dias_vacaciones: int
+    dias_permiso: int
+    dias_incapacidad: int
 
 
 # ── Config / Branding ───────────────────────────────────────────────────
