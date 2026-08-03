@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Fallback branding tokens — match the seeded `config` table defaults.
+ * ConfigContext overwrites these on :root as soon as GET /config resolves,
+ * so the whole UI re-themes without a rebuild. Never reference a raw hex
+ * value from a component; always go through one of these custom properties
+ * (or the Tailwind color tokens in tailwind.config.js that wrap them).
+ */
+:root {
+  --color-primary: #1f5fa5;
+  --color-primary-fg: #ffffff;
+  --color-secondary: #1d9e75;
+  --color-secondary-fg: #ffffff;
+  --color-accent: #f59e0b;
+  --color-accent-fg: #1a1300;
+
+  --color-surface: #ffffff;
+  --color-surface-muted: #f5f7fa;
+  --color-border: #e2e8f0;
+  --color-ink: #0f172a;
+  --color-ink-muted: #64748b;
+
+  --color-danger: #dc2626;
+  --color-success: #1d9e75;
+  --color-warning: #f59e0b;
+}
+
+* {
+  scrollbar-width: thin;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* FullCalendar brand overrides — keep it on the same token system as the
+   rest of the app instead of its default blue. */
+.fc-field-check .fc-button-primary {
+  background-color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+.fc-field-check .fc-button-primary:hover {
+  filter: brightness(0.92);
+}
+.fc-field-check .fc-day-today {
+  background-color: color-mix(in srgb, var(--color-primary) 8%, transparent) !important;
+}
+.fc-field-check .fc-event {
+  cursor: pointer;
+  border: none;
+  font-size: 0.75rem;
+}
+.fc-field-check a {
+  color: var(--color-ink);
+}

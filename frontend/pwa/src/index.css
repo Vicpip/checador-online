@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Fallback branding tokens — match the seeded `config` table defaults.
+   ConfigContext overwrites these on :root as soon as GET /config resolves. */
+:root {
+  --color-primary: #1f5fa5;
+  --color-primary-fg: #ffffff;
+  --color-secondary: #1d9e75;
+  --color-secondary-fg: #ffffff;
+  --color-accent: #f59e0b;
+  --color-accent-fg: #1a1300;
+
+  --color-surface: #ffffff;
+  --color-surface-muted: #f5f7fa;
+  --color-border: #e2e8f0;
+  --color-ink: #0f172a;
+  --color-ink-muted: #64748b;
+
+  --color-danger: #dc2626;
+  --color-success: #1d9e75;
+  --color-warning: #f59e0b;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+/* Touch-first: disable the 300ms tap delay and text-select smudging on
+   interactive elements — this is a glance-and-go mobile app. */
+button, a, [role="button"] {
+  touch-action: manipulation;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
