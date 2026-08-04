@@ -1,11 +1,13 @@
 import { ExclamationTriangleIcon, MapPinIcon } from "@heroicons/react/24/outline";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import api from "../api/client";
 import CamaraCheckin from "../components/CamaraCheckin";
 import EstadoJornada from "../components/EstadoJornada";
 import { useConfig } from "../context/ConfigContext";
 import { useGeolocation } from "../hooks/useGeolocation";
+import { base64ToBlob, blobToBase64 } from "../utils/base64";
 import { formatFechaLarga } from "../utils/formato";
+import { addPendingCheckin, getPendingCheckins, removePendingCheckin } from "../utils/offlineQueue";
 
 const CACHE_KEY = "fc_jornada_hoy";
 
@@ -23,6 +25,8 @@ export default function Jornada() {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [offlineNotice, setOfflineNotice] = useState(false);
+  const [syncMessage, setSyncMessage] = useState("");
+  const syncingRef = useRef(false);
 
   function persist(data) {
     setJornada(data);
@@ -43,7 +47,89 @@ export default function Jornada() {
       });
   }, []);
 
+  // Replays queued offline check-ins/check-outs in the order they happened
+  // as soon as connectivity comes back. Runs once on mount too, in case the
+  // device was already back online when the app opened with a leftover queue.
+  useEffect(() => {
+    async function sincronizarPendientes() {
+      if (syncingRef.current) return;
+      syncingRef.current = true;
+      try {
+        const pendientes = await getPendingCheckins();
+        let sincronizados = 0;
+        for (const item of pendientes) {
+          try {
+            const formData = new FormData();
+            formData.append("foto", base64ToBlob(item.fotoBase64), "checkin.jpg");
+            formData.append("lat", item.lat);
+            formData.append("lng", item.lng);
+            formData.append("precision_m", item.precision_m);
+            const endpoint = item.tipo === "entrada" ? "/jornadas/checkin" : "/jornadas/checkout";
+            const res = await api.post(endpoint, formData, {
+              headers: { "Content-Type": "multipart/form-data" },
+            });
+            await removePendingCheckin(item.id);
+            persist(res.data);
+            sincronizados++;
+          } catch {
+            // Leave this (and any later) item queued for the next attempt.
+            break;
+          }
+        }
+        if (sincronizados > 0 && (await getPendingCheckins()).length === 0) {
+          setSyncMessage("Check-ins sincronizados");
+          setTimeout(() => setSyncMessage(""), 4000);
+        }
+      } finally {
+        syncingRef.current = false;
+      }
+    }
+
+    window.addEventListener("online", sincronizarPendientes);
+    if (navigator.onLine) sincronizarPendientes();
+    return () => window.removeEventListener("online", sincronizarPendientes);
+  }, []);
+
   const modo = !jornada ? "checkin" : jornada.estatus === "activa" ? "checkout" : "done";
+
+  function construirJornadaPendiente(tipo, timestamp) {
+    if (tipo === "entrada") {
+      return {
+        estatus: "activa",
+        entrada_hora: timestamp,
+        salida_hora: null,
+        horas_trabajadas: null,
+        _pendienteSync: true,
+      };
+    }
+    const horas = jornada?.entrada_hora
+      ? Math.round(((new Date(timestamp) - new Date(jornada.entrada_hora)) / 3600000) * 100) / 100
+      : null;
+    return {
+      ...jornada,
+      estatus: "completa",
+      salida_hora: timestamp,
+      horas_trabajadas: horas,
+      _pendienteSync: true,
+    };
+  }
+
+  async function guardarCheckinPendiente(tipo, posicion) {
+    const fotoBase64 = await blobToBase64(foto);
+    const timestamp = new Date().toISOString();
+    await addPendingCheckin({
+      id: crypto.randomUUID(),
+      tipo,
+      timestamp,
+      fotoBase64,
+      lat: posicion.lat,
+      lng: posicion.lng,
+      precision_m: posicion.precision_m,
+    });
+    persist(construirJornadaPendiente(tipo, timestamp));
+    setFoto(null);
+    setSyncMessage("Check-in guardado localmente. Se enviará cuando recuperes señal.");
+  }
 
   async function handleSubmit() {
     if (!foto) {
@@ -51,21 +137,35 @@ export default function Jornada() {
       return;
     }
     setSubmitError("");
+    setSyncMessage("");
     setSubmitting(true);
     try {
       const posicion = await locate(); // throws with a clear message on denial/failure
-      const formData = new FormData();
-      formData.append("foto", foto, "checkin.jpg");
-      formData.append("lat", posicion.lat);
-      formData.append("lng", posicion.lng);
-      formData.append("precision_m", posicion.precision_m);
+      const tipo = modo === "checkin" ? "entrada" : "salida";
 
-      const endpoint = modo === "checkin" ? "/jornadas/checkin" : "/jornadas/checkout";
-      const res = await api.post(endpoint, formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      persist(res.data);
-      setFoto(null);
+      if (!navigator.onLine) {
+        await guardarCheckinPendiente(tipo, posicion);
+        return;
+      }
+
+      try {
+        const formData = new FormData();
+        formData.append("foto", foto, "checkin.jpg");
+        formData.append("lat", posicion.lat);
+        formData.append("lng", posicion.lng);
+        formData.append("precision_m", posicion.precision_m);
+
+        const endpoint = modo === "checkin" ? "/jornadas/checkin" : "/jornadas/checkout";
+        const res = await api.post(endpoint, formData, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+        persist(res.data);
+        setFoto(null);
+      } catch (err) {
+        if (err.response) throw err; // real server error (409/400/etc.), handled below
+        // Request never reached the server (connection dropped mid-attempt) — queue it instead.
+        await guardarCheckinPendiente(tipo, posicion);
+      }
     } catch (err) {
       if (err.response?.status === 409) {
         setSubmitError("Ya registraste tu entrada hoy.");
@@ -97,6 +197,12 @@ export default function Jornada() {
           <ExclamationTriangleIcon className="h-5 w-5 shrink-0" aria-hidden="true" />
           <span>Sin conexión — mostrando tu último estado conocido.</span>
         </div>
+      )}
+
+      {syncMessage && (
+        <p role="status" className="text-sm text-secondary bg-secondary/10 rounded-lg px-3 py-2.5">
+          {syncMessage}
+        </p>
       )}
 
       <EstadoJornada jornada={jornada} />

@@ -30,7 +30,47 @@ export default defineConfig(() => {
           ],
         },
         workbox: {
+          // Precache the full app shell (HTML/CSS/JS/icons) so the PWA boots
+          // with no network at all, and fall back to it for SPA navigations
+          // (e.g. a hard refresh on /mis-jornadas while offline).
           globPatterns: ["**/*.{js,css,html,ico,png,svg}"],
+          navigateFallback: "/index.html",
+          navigateFallbackDenylist: [/^\/api\//],
+          runtimeCaching: [
+            {
+              // GET /me/jornada/hoy — read-only status, safe to serve stale.
+              urlPattern: ({ url, sameOrigin }) => sameOrigin && url.pathname === "/api/me/jornada/hoy",
+              handler: "NetworkFirst",
+              options: {
+                cacheName: "api-jornada-hoy",
+                networkTimeoutSeconds: 5,
+                cacheableResponse: { statuses: [0, 200] },
+                expiration: { maxEntries: 5, maxAgeSeconds: 60 * 60 * 24 },
+              },
+            },
+            {
+              // GET /jornadas/historial — técnico's own attendance history.
+              urlPattern: ({ url, sameOrigin }) => sameOrigin && url.pathname === "/api/jornadas/historial",
+              handler: "NetworkFirst",
+              options: {
+                cacheName: "api-jornadas-historial",
+                networkTimeoutSeconds: 5,
+                cacheableResponse: { statuses: [0, 200] },
+                expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 },
+              },
+            },
+            {
+              // GET /config — branding + working-hours config.
+              urlPattern: ({ url, sameOrigin }) => sameOrigin && url.pathname === "/api/config",
+              handler: "NetworkFirst",
+              options: {
+                cacheName: "api-config",
+                networkTimeoutSeconds: 5,
+                cacheableResponse: { statuses: [0, 200] },
+                expiration: { maxEntries: 5, maxAgeSeconds: 60 * 60 * 24 },
+              },
+            },
+          ],
         },
       }),
     ],

@@ -28,8 +28,13 @@ export default function EstadoJornada({ jornada }) {
         <CheckCircleIcon className="h-8 w-8 text-secondary" aria-hidden="true" />
       )}
       <div>
-        <p className="font-medium text-ink">
+        <p className="font-medium text-ink flex items-center gap-2 flex-wrap">
           {enCurso ? "Jornada en curso" : "Jornada completada"}
+          {jornada._pendienteSync && (
+            <span className="text-xs font-normal bg-accent/20 text-amber-800 rounded-full px-2 py-0.5">
+              Pendiente de sincronizar
+            </span>
+          )}
         </p>
         <p className="text-sm text-ink-muted">
           Entrada: {formatHora(jornada.entrada_hora)}

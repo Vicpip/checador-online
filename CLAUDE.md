@@ -40,7 +40,8 @@ field-check/
 │   └── alembic/versions/   0001 initial (5 tables + seeded config), 0002 TIMESTAMPTZ columns,
 │                           0003 servicios.hora, 0004 config working-hours columns,
 │                           0005 horarios table (per-técnico expected weekly schedule),
-│                           0006 ausencias table (absences / time-off)
+│                           0006 ausencias table (absences / time-off), 0007 ausencias approval
+│                           workflow (estatus/respuesta_notas/respondida_por)
 ├── frontend/
 │   ├── admin/src/          pages/ (Dashboard, Jornadas, Reportes, Calendario, Usuarios,
 │   │                       Clientes, Configuracion, Login), components/ (EditarPerfilModal,
@@ -272,6 +273,50 @@ hardcode a hex value in a component.
   practice since CSV exports are rarely run for future ranges, but load-bearing for Calendario, whose
   visible month routinely includes future days). `reporte_tecnico`'s own single-técnico loop was
   intentionally left as-is (not extracted) to avoid changing Reportes.jsx behavior outside this ask.
+
+### 6. Ausencia approval workflow — técnico self-requests (2026-08-03)
+- Migration `0007` adds `estatus` (`pendiente|aprobada|rechazada`, default `'aprobada'`),
+  `respuesta_notas` (nullable text), and `respondida_por` (nullable FK to `usuarios`) to
+  `ausencias`. The default keeps every pre-existing (admin-created) row — and every future
+  admin-created row — landing as `'aprobada'` with no review step; only the técnico self-request
+  path opts into `'pendiente'`.
+- `POST /jornadas/ausencias` (`routers/jornadas.py::solicitar_permiso`, already existed pre-this-
+  feature) now explicitly sets `estatus="pendiente"` on creation. `POST /admin/ausencias`
+  (`routers/admin.py::crear_ausencia`) explicitly sets `estatus="aprobada"` — admin-registered
+  absences still skip review, matching pre-existing behavior.
+- New `GET /jornadas/ausencias` (`routers/jornadas.py::mis_ausencias`) — the authenticated
+  técnico's own ausencia rows (any estatus), newest-`fecha`-first. Powers the PWA's
+  `pages/MisPermisos.jsx`.
+- New `PATCH /admin/ausencias/{id}/responder` (`routers/admin.py::responder_ausencia`, schema
+  `AusenciaResponder`) — admin-only, sets `estatus` (`aprobada|rechazada`), optional
+  `respuesta_notas`, and `respondida_por` (the responding admin). No `estatus` guard on the
+  current row value — an admin can re-respond to flip a decision, by design (kept simple; add a
+  `pendiente`-only check here if that turns out to be undesired).
+- `GET /admin/ausencias` (`routers/admin.py::listar_ausencias`) gained an optional `estatus`
+  query filter (`tecnico_id`/`fecha_inicio`/`fecha_fin` were already there) — used by the admin
+  Dashboard to separately fetch today's *approved* ausencias (for the pre-existing "sin registro
+  hoy" section) and *all pending* ones (for the new section below), without polluting either
+  with the other's rows.
+- Admin UI: `pages/Dashboard.jsx` gained a "Solicitudes pendientes" section (above "{worker}s sin
+  registro hoy") listing every `estatus='pendiente'` ausencia with Aprobar/Rechazar buttons.
+  Both open `components/ResponderAusenciaModal.jsx` (new) — a small confirmation dialog with an
+  optional note — which calls the new PATCH endpoint and refreshes the dashboard. The pre-existing
+  "sin registro hoy" ausencia lookup (`ausenciasHoy`) was narrowed to `estatus=aprobada` only, so a
+  técnico's still-pending or already-rejected self-request no longer shows there as if it were a
+  settled absence.
+  **Known gap**: `components/AusenciasCalendario.jsx`, `pages/Calendario.jsx`, and the reportes
+  endpoints (`GET /admin/reportes`, `/admin/reportes/export/csv`,
+  `_calcular_faltas_injustificadas`) still query `Ausencia` rows with no `estatus` filter — a
+  técnico's `pendiente` or `rechazada` self-request will still render/count there as if settled.
+  Left as-is deliberately (Reportes/Calendario were out of scope for this change) — worth
+  revisiting if self-service requests see real usage.
+- PWA UI: `pages/MisPermisos.jsx` (new) — the técnico's own permiso history, one card per ausencia
+  with a status badge (pendiente=yellow, aprobada=green, rechazada=red, same convention as
+  `components/EstadoJornadaBadge`/`Badge` elsewhere) and `respuesta_notas` shown when present. The
+  "Solicitar permiso"/"Nueva solicitud" entry point moved here from `pages/Jornada.jsx` (which no
+  longer links to `/solicitar-permiso` directly). `components/Layout.jsx`'s bottom nav grew from 3
+  to 4 tabs (`grid-cols-3` → `grid-cols-4`) to add "Mis permisos"
+  (`ClipboardDocumentCheckIcon`) alongside Jornada/Mis servicios/Mis jornadas.
 
 ## Hard rules (do not violate these — see CONTEXT_CHECADOR.md for the full rationale)
 

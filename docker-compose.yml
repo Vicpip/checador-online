@@ -38,7 +38,7 @@ services:
     build:
       context: .
       dockerfile: nginx/Dockerfile
-    restart: unless-stopped
+    restart: on-failure
     depends_on:
       - backend
     ports:

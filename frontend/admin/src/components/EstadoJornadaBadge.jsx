@@ -4,7 +4,7 @@
  * than scheduled. See backend/utils/puntualidad.py::analizar_jornada for how
  * these fields (puntual, salio_antes, salio_despues, horas_esperadas) are computed.
  */
-function evaluar(jornada) {
+export function evaluar(jornada) {
   if (jornada.estatus === "sin_salida" || !jornada.salida_hora) {
     return { tono: "danger", texto: "Sin salida" };
   }

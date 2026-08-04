@@ -60,6 +60,7 @@ class HorarioOut(HorarioUpsert):
 
 # ── Ausencias ─────────────────────────────────────────────────────────────
 AUSENCIA_TIPO_PATTERN = "^(falta|vacaciones|permiso_con_goce|permiso_sin_goce|incapacidad)$"
+AUSENCIA_RESPUESTA_ESTATUS_PATTERN = "^(aprobada|rechazada)$"
 
 
 class AusenciaCreate(BaseModel):
@@ -67,6 +68,11 @@ class AusenciaCreate(BaseModel):
     fecha: date
     tipo: str = Field(pattern=AUSENCIA_TIPO_PATTERN)
     notas: str | None = None
+
+
+class AusenciaResponder(BaseModel):
+    estatus: str = Field(pattern=AUSENCIA_RESPUESTA_ESTATUS_PATTERN)
+    respuesta_notas: str | None = None
 
 
 class AusenciaOut(BaseModel):
@@ -79,6 +85,9 @@ class AusenciaOut(BaseModel):
     notas: str | None
     creado_por: uuid.UUID
     creado_en: datetime
+    estatus: str
+    respuesta_notas: str | None
+    respondida_por: uuid.UUID | None
 
 
 class FaltaInjustificadaOut(BaseModel):
@@ -130,6 +139,15 @@ class JornadaOut(BaseModel):
 class JornadaConTecnico(JornadaOut):
     tecnico_nombre: str
     tecnico_email: str
+
+
+class JornadaUpdate(BaseModel):
+    """Wall-clock times (business timezone) — combined with the jornada's existing
+    `fecha` and converted to UTC in the router. `salida_hora` omitted/null means the
+    jornada has no checkout (horas_trabajadas/estatus are recalculated accordingly)."""
+
+    entrada_hora: time
+    salida_hora: time | None = None
 
 
 class JornadaPage(BaseModel):
@@ -225,6 +243,7 @@ class ConfigOut(BaseModel):
     admin_role_label: str
     hora_inicio_jornada: time
     hora_limite_entrada: time
+    hora_limite_alerta: time
 
 
 class ConfigUpdate(BaseModel):

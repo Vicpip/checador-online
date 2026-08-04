@@ -2,7 +2,7 @@
 import csv
 import io
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -16,6 +16,7 @@ from models import Ausencia, Cliente, Config, Horario, Jornada, Usuario
 from schemas import (
     AusenciaCreate,
     AusenciaOut,
+    AusenciaResponder,
     ClienteCreate,
     ClienteOut,
     FaltaInjustificadaOut,
@@ -24,6 +25,7 @@ from schemas import (
     JornadaAnalisis,
     JornadaConTecnico,
     JornadaPage,
+    JornadaUpdate,
     ReporteOut,
     TecnicoResumen,
     UsuarioCreate,
@@ -106,6 +108,48 @@ def _jornada_dict(j: Jornada) -> dict:
         "horas_trabajadas": j.horas_trabajadas,
         "estatus": j.estatus,
     }
+
+
+@router.patch("/jornadas/{jornada_id}", response_model=JornadaConTecnico)
+def actualizar_jornada(
+    jornada_id: uuid.UUID,
+    body: JornadaUpdate,
+    _: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    jornada = db.get(Jornada, jornada_id)
+    if jornada is None:
+        raise HTTPException(status_code=404, detail="Jornada not found")
+
+    zona = ZoneInfo(get_settings().business_timezone)
+    entrada_hora = datetime.combine(jornada.fecha, body.entrada_hora, tzinfo=zona)
+    salida_hora = (
+        datetime.combine(jornada.fecha, body.salida_hora, tzinfo=zona)
+        if body.salida_hora is not None
+        else None
+    )
+    if salida_hora is not None and salida_hora <= entrada_hora:
+        raise HTTPException(
+            status_code=400,
+            detail="La hora de salida debe ser posterior a la hora de entrada",
+        )
+
+    jornada.entrada_hora = entrada_hora
+    jornada.salida_hora = salida_hora
+    if salida_hora is not None:
+        jornada.horas_trabajadas = round((salida_hora - entrada_hora).total_seconds() / 3600, 2)
+        jornada.estatus = "completa"
+    else:
+        jornada.horas_trabajadas = None
+        jornada.estatus = "activa" if jornada.fecha == date.today() else "sin_salida"
+
+    db.commit()
+    db.refresh(jornada)
+    return JornadaConTecnico(
+        **_jornada_dict(jornada),
+        tecnico_nombre=jornada.tecnico.nombre,
+        tecnico_email=jornada.tecnico.email,
+    )
 
 
 # ── Reportes ──────────────────────────────────────────────────────────────
@@ -373,6 +417,42 @@ def listar_tecnicos(_: Usuario = Depends(require_admin), db: Session = Depends(g
     ).all()
 
 
+def tecnicos_sin_checkin_hoy(db: Session) -> list[Usuario]:
+    """
+    Active técnicos with neither a jornada nor an approved ausencia today.
+    Shared by the `/admin/sin-checkin-alerta` endpoint and
+    `utils/scheduler.py`'s daily alert job — the scheduler calls this
+    directly (in-process, no HTTP/auth round-trip needed).
+    """
+    hoy = date.today()
+    tecnicos = db.scalars(
+        select(Usuario).where(Usuario.rol == "tecnico", Usuario.activo == True)  # noqa: E712
+    ).all()
+
+    tecnicos_con_jornada = {
+        j.tecnico_id
+        for j in db.scalars(select(Jornada).where(Jornada.fecha == hoy)).all()
+    }
+    tecnicos_con_ausencia_aprobada = {
+        a.tecnico_id
+        for a in db.scalars(
+            select(Ausencia).where(Ausencia.fecha == hoy, Ausencia.estatus == "aprobada")
+        ).all()
+    }
+
+    return [
+        t
+        for t in tecnicos
+        if t.id not in tecnicos_con_jornada and t.id not in tecnicos_con_ausencia_aprobada
+    ]
+
+
+@router.get("/sin-checkin-alerta", response_model=list[TecnicoResumen])
+def listar_sin_checkin_alerta(_: Usuario = Depends(require_admin), db: Session = Depends(get_db)):
+    """Internal endpoint for the scheduler's daily alert job (see utils/scheduler.py)."""
+    return tecnicos_sin_checkin_hoy(db)
+
+
 # ── Usuarios ─────────────────────────────────────────────────────────────
 @router.get("/usuarios", response_model=list[UsuarioOut])
 def listar_usuarios(_: Usuario = Depends(require_admin), db: Session = Depends(get_db)):
@@ -474,6 +554,7 @@ def listar_ausencias(
     tecnico_id: uuid.UUID | None = None,
     fecha_inicio: date | None = None,
     fecha_fin: date | None = None,
+    estatus: str | None = None,
     _: Usuario = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -484,6 +565,8 @@ def listar_ausencias(
         stmt = stmt.where(Ausencia.fecha >= fecha_inicio)
     if fecha_fin:
         stmt = stmt.where(Ausencia.fecha <= fecha_fin)
+    if estatus:
+        stmt = stmt.where(Ausencia.estatus == estatus)
     return db.scalars(stmt.order_by(Ausencia.fecha)).all()
 
 
@@ -518,8 +601,29 @@ def crear_ausencia(
         tipo=body.tipo,
         notas=body.notas,
         creado_por=admin.id,
+        estatus="aprobada",
     )
     db.add(ausencia)
+    db.commit()
+    db.refresh(ausencia)
+    return ausencia
+
+
+@router.patch("/ausencias/{ausencia_id}/responder", response_model=AusenciaOut)
+def responder_ausencia(
+    ausencia_id: uuid.UUID,
+    body: AusenciaResponder,
+    admin: Usuario = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Approve/reject a técnico's self-requested ausencia (estatus='pendiente')."""
+    ausencia = db.get(Ausencia, ausencia_id)
+    if ausencia is None:
+        raise HTTPException(status_code=404, detail="Ausencia not found")
+
+    ausencia.estatus = body.estatus
+    ausencia.respuesta_notas = body.respuesta_notas
+    ausencia.respondida_por = admin.id
     db.commit()
     db.refresh(ausencia)
     return ausencia

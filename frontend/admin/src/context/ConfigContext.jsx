@@ -13,6 +13,7 @@ const FALLBACK = {
   admin_role_label: "Administrador",
   hora_inicio_jornada: "08:00:00",
   hora_limite_entrada: "08:00:00",
+  hora_limite_alerta: "09:30:00",
 };
 
 /** Derive a readable foreground (black/white) for a given hex background. */

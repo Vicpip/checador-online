@@ -8,11 +8,11 @@ import { useEffect, useState } from "react";
 import api from "../api/client";
 import Badge from "../components/Badge";
 import StatCard from "../components/StatCard";
+import AusenciaModal from "../components/AusenciaModal";
+import ResponderAusenciaModal from "../components/ResponderAusenciaModal";
 import { AUSENCIA_LABELS } from "../components/AusenciasCalendario";
 import { useConfig } from "../context/ConfigContext";
-import { formatHora, hoyISO } from "../utils/formato";
-
-const TIPOS_TIEMPO_LIBRE = ["vacaciones", "permiso_con_goce", "permiso_sin_goce", "incapacidad"];
+import { formatFecha, formatHora, hoyISO } from "../utils/formato";
 
 export default function Dashboard() {
   const { config } = useConfig();
@@ -20,31 +20,66 @@ export default function Dashboard() {
   const [jornadasHoy, setJornadasHoy] = useState([]);
   const [serviciosHoy, setServiciosHoy] = useState([]);
   const [ausenciasHoy, setAusenciasHoy] = useState([]);
+  const [solicitudesPendientes, setSolicitudesPendientes] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [modalAusencia, setModalAusencia] = useState(false);
+  const [modalRespuesta, setModalRespuesta] = useState(null); // { ausencia, estatus } | null
 
-  useEffect(() => {
+  function cargarDatos() {
     const hoy = hoyISO();
-    Promise.all([
+    return Promise.all([
       api.get("/admin/tecnicos"),
       api.get("/admin/jornadas", { params: { fecha_inicio: hoy, fecha_fin: hoy, limit: 100 } }),
       api.get("/admin/servicios", { params: { fecha_inicio: hoy, fecha_fin: hoy } }),
-      api.get("/admin/ausencias", { params: { fecha_inicio: hoy, fecha_fin: hoy } }),
-    ])
-      .then(([tecnicosRes, jornadasRes, serviciosRes, ausenciasRes]) => {
-        setTecnicos(tecnicosRes.data);
-        setJornadasHoy(jornadasRes.data.items);
-        setServiciosHoy(serviciosRes.data);
-        setAusenciasHoy(
-          ausenciasRes.data.filter((a) => TIPOS_TIEMPO_LIBRE.includes(a.tipo))
-        );
-      })
-      .finally(() => setLoading(false));
+      api.get("/admin/ausencias", { params: { fecha_inicio: hoy, fecha_fin: hoy, estatus: "aprobada" } }),
+      api.get("/admin/ausencias", { params: { estatus: "pendiente" } }),
+    ]).then(([tecnicosRes, jornadasRes, serviciosRes, ausenciasRes, pendientesRes]) => {
+      setTecnicos(tecnicosRes.data);
+      setJornadasHoy(jornadasRes.data.items);
+      setServiciosHoy(serviciosRes.data);
+      setAusenciasHoy(ausenciasRes.data);
+      setSolicitudesPendientes(pendientesRes.data);
+    });
+  }
+
+  async function handleResponder(ausenciaId, body) {
+    await api.patch(`/admin/ausencias/${ausenciaId}/responder`, body);
+    await cargarDatos();
+  }
+
+  useEffect(() => {
+    cargarDatos().finally(() => setLoading(false));
   }, []);
 
-  const tecnicoNombre = (id) => tecnicos.find((t) => t.id === id)?.nombre || "";
+  async function handleSaveAusencia(form) {
+    const fechaFin = form.tipo === "vacaciones" && form.fechaFin ? form.fechaFin : form.fecha;
+    const fechas = [];
+    for (
+      let d = new Date(`${form.fecha}T00:00:00`);
+      d <= new Date(`${fechaFin}T00:00:00`);
+      d.setDate(d.getDate() + 1)
+    ) {
+      fechas.push(d.toISOString().slice(0, 10));
+    }
+    for (const fecha of fechas) {
+      await api.post("/admin/ausencias", {
+        tecnico_id: form.tecnico_id,
+        fecha,
+        tipo: form.tipo,
+        notas: form.notas || null,
+      });
+    }
+    await cargarDatos();
+  }
 
   const enCurso = jornadasHoy.filter((j) => j.estatus === "activa").length;
   const completas = jornadasHoy.filter((j) => j.estatus === "completa").length;
+
+  const idsConJornadaHoy = new Set(jornadasHoy.map((j) => j.tecnico_id));
+  const ausenciaPorTecnico = new Map(ausenciasHoy.map((a) => [a.tecnico_id, a]));
+  const tecnicosSinRegistro = tecnicos.filter((t) => !idsConJornadaHoy.has(t.id));
+  const conAusencia = tecnicosSinRegistro.filter((t) => ausenciaPorTecnico.has(t.id));
+  const sinJustificar = tecnicosSinRegistro.filter((t) => !ausenciaPorTecnico.has(t.id));
 
   return (
     <div className="space-y-6">
@@ -102,27 +137,121 @@ export default function Dashboard() {
 
       <div className="rounded-lg border border-border bg-surface shadow-card overflow-hidden">
         <div className="px-5 py-4 border-b border-border">
-          <h2 className="font-semibold text-ink">Ausencias hoy</h2>
+          <h2 className="font-semibold text-ink">Solicitudes pendientes</h2>
         </div>
         {loading ? (
           <p className="p-5 text-ink-muted">Cargando…</p>
-        ) : ausenciasHoy.length === 0 ? (
-          <p className="p-5 text-ink-muted">
-            Todos los {config.worker_role_label.toLowerCase()}s disponibles hoy.
-          </p>
+        ) : solicitudesPendientes.length === 0 ? (
+          <p className="p-5 text-ink-muted">No hay solicitudes de permiso pendientes.</p>
         ) : (
           <ul className="divide-y divide-border">
-            {ausenciasHoy.map((a) => (
-              <li key={a.id} className="px-5 py-3 flex items-center justify-between gap-3">
-                <span className="text-ink">{tecnicoNombre(a.tecnico_id)}</span>
-                <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium bg-blue-100 text-blue-700">
-                  {AUSENCIA_LABELS[a.tipo] || a.tipo}
-                </span>
-              </li>
-            ))}
+            {solicitudesPendientes.map((s) => {
+              const tecnico = tecnicos.find((t) => t.id === s.tecnico_id);
+              return (
+                <li key={s.id} className="px-5 py-3 flex items-center justify-between gap-3 flex-wrap">
+                  <div className="min-w-0">
+                    <p className="text-ink font-medium">{tecnico?.nombre || "—"}</p>
+                    <p className="text-sm text-ink-muted">
+                      {AUSENCIA_LABELS[s.tipo] || s.tipo} · {formatFecha(s.fecha)}
+                      {s.notas && ` · "${s.notas}"`}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => setModalRespuesta({ ausencia: s, estatus: "aprobada" })}
+                      className="rounded-lg bg-secondary text-secondary-fg font-medium px-3 py-2 text-sm hover:opacity-90 transition-opacity cursor-pointer"
+                    >
+                      Aprobar
+                    </button>
+                    <button
+                      onClick={() => setModalRespuesta({ ausencia: s, estatus: "rechazada" })}
+                      className="rounded-lg bg-danger text-white font-medium px-3 py-2 text-sm hover:opacity-90 transition-opacity cursor-pointer"
+                    >
+                      Rechazar
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
+
+      <div className="rounded-lg border border-border bg-surface shadow-card overflow-hidden">
+        <div className="px-5 py-4 border-b border-border flex items-center justify-between gap-3">
+          <h2 className="font-semibold text-ink">{config.worker_role_label}s sin registro hoy</h2>
+          <button
+            onClick={() => setModalAusencia(true)}
+            className="rounded-lg border border-border bg-surface px-4 py-2.5 text-sm font-medium text-ink hover:bg-surface-muted transition-colors cursor-pointer"
+          >
+            + Registrar ausencia
+          </button>
+        </div>
+        {loading ? (
+          <p className="p-5 text-ink-muted">Cargando…</p>
+        ) : tecnicosSinRegistro.length === 0 ? (
+          <p className="p-5 text-ink-muted">
+            Todos los {config.worker_role_label.toLowerCase()}s han registrado entrada hoy.
+          </p>
+        ) : (
+          <div className="divide-y divide-border">
+            {conAusencia.length > 0 && (
+              <div className="px-5 py-3">
+                <p className="text-xs font-medium text-ink-muted uppercase tracking-wide mb-2">
+                  Con ausencia registrada
+                </p>
+                <ul className="space-y-2">
+                  {conAusencia.map((t) => (
+                    <li key={t.id} className="flex items-center justify-between gap-3">
+                      <span className="text-ink">{t.nombre}</span>
+                      <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium bg-blue-100 text-blue-700">
+                        {AUSENCIA_LABELS[ausenciaPorTecnico.get(t.id).tipo] || ausenciaPorTecnico.get(t.id).tipo}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {sinJustificar.length > 0 && (
+              <div className="px-5 py-3">
+                <p className="text-xs font-medium text-ink-muted uppercase tracking-wide mb-2">
+                  Sin justificación
+                </p>
+                <ul className="space-y-2">
+                  {sinJustificar.map((t) => (
+                    <li key={t.id} className="flex items-center justify-between gap-3">
+                      <span className="text-ink">{t.nombre}</span>
+                      <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium bg-danger/10 text-danger">
+                        Sin registro
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {modalAusencia && (
+        <AusenciaModal
+          tecnicos={tecnicos}
+          workerLabel={config.worker_role_label}
+          onSave={handleSaveAusencia}
+          onClose={() => setModalAusencia(false)}
+        />
+      )}
+
+      {modalRespuesta && (
+        <ResponderAusenciaModal
+          ausencia={modalRespuesta.ausencia}
+          estatus={modalRespuesta.estatus}
+          tecnicoNombre={tecnicos.find((t) => t.id === modalRespuesta.ausencia.tecnico_id)?.nombre || "—"}
+          tipoLabel={AUSENCIA_LABELS[modalRespuesta.ausencia.tipo] || modalRespuesta.ausencia.tipo}
+          onSave={handleResponder}
+          onClose={() => setModalRespuesta(null)}
+        />
+      )}
     </div>
   );
 }

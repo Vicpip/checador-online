@@ -75,23 +75,38 @@ export default function Reportes() {
       .finally(() => setLoading(false));
   }, [tecnicoId, fechaInicio, fechaFin]);
 
-  async function handleExportCsv() {
+  async function handleExportExcel() {
     setExporting(true);
     try {
-      const res = await api.get("/admin/reportes/export/csv", {
-        params: { tecnico_id: tecnicoId, fecha_inicio: fechaInicio, fecha_fin: fechaFin },
-        responseType: "blob",
+      const { generarReporteExcel, slugParaArchivo } = await import("../utils/reporteExcel");
+      const reportes = await Promise.all(
+        tecnicos.map((t) =>
+          api
+            .get("/admin/reportes", {
+              params: { tecnico_id: t.id, fecha_inicio: fechaInicio, fecha_fin: fechaFin },
+            })
+            .then((res) => res.data)
+        )
+      );
+      const buffer = await generarReporteExcel({
+        companyName: config.company_name,
+        fechaInicio,
+        fechaFin,
+        reportes,
       });
-      const url = URL.createObjectURL(res.data);
+      const blob = new Blob([buffer], {
+        type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      });
+      const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = "reporte_asistencia.csv";
+      a.download = `reporte_${slugParaArchivo(config.company_name)}_${fechaInicio}_${fechaFin}.xlsx`;
       document.body.appendChild(a);
       a.click();
       a.remove();
       URL.revokeObjectURL(url);
     } catch {
-      setError("No se pudo exportar el CSV.");
+      setError("No se pudo exportar el Excel.");
     } finally {
       setExporting(false);
     }
@@ -105,12 +120,12 @@ export default function Reportes() {
           <p className="text-ink-muted mt-1">Horas trabajadas y puntualidad por {config.worker_role_label.toLowerCase()}</p>
         </div>
         <button
-          onClick={handleExportCsv}
-          disabled={!tecnicoId || exporting}
+          onClick={handleExportExcel}
+          disabled={tecnicos.length === 0 || exporting}
           className="flex items-center gap-2 rounded-lg border border-border bg-surface px-4 py-2.5 text-sm font-medium text-ink hover:bg-surface-muted transition-colors disabled:opacity-60 cursor-pointer disabled:cursor-not-allowed"
         >
           <ArrowDownTrayIcon className="h-4 w-4" />
-          {exporting ? "Exportando…" : "Exportar CSV"}
+          {exporting ? "Exportando…" : "Exportar Excel"}
         </button>
       </div>
 

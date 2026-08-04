@@ -1,11 +1,20 @@
-import { ArrowRightStartOnRectangleIcon, BriefcaseIcon, HomeIcon } from "@heroicons/react/24/outline";
+import {
+  ArrowRightStartOnRectangleIcon,
+  BriefcaseIcon,
+  CalendarDaysIcon,
+  ClipboardDocumentCheckIcon,
+  HomeIcon,
+  WifiIcon,
+} from "@heroicons/react/24/outline";
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useConfig } from "../context/ConfigContext";
+import { useOnlineStatus } from "../hooks/useOnlineStatus";
 
 export default function Layout() {
   const { config } = useConfig();
   const { user, logout } = useAuth();
+  const online = useOnlineStatus();
 
   return (
     <div className="min-h-dvh flex flex-col bg-surface-muted">
@@ -32,12 +41,22 @@ export default function Layout() {
         </button>
       </header>
 
+      {!online && (
+        <div
+          role="status"
+          className="sticky top-[57px] z-10 flex items-center justify-center gap-2 bg-accent/10 text-amber-800 text-xs sm:text-sm px-4 py-2 text-center"
+        >
+          <WifiIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>Sin conexión — los check-ins se guardarán y enviarán al recuperar señal.</span>
+        </div>
+      )}
+
       <main className="flex-1 px-4 py-5 pb-24 max-w-lg w-full mx-auto">
         <Outlet />
       </main>
 
       <nav className="fixed bottom-0 inset-x-0 z-20 bg-surface border-t border-border pb-[env(safe-area-inset-bottom)]">
-        <div className="max-w-lg mx-auto grid grid-cols-2">
+        <div className="max-w-lg mx-auto grid grid-cols-4">
           <NavLink
             to="/"
             end
@@ -60,6 +79,28 @@ export default function Layout() {
           >
             <BriefcaseIcon className="h-6 w-6" aria-hidden="true" />
             Mis servicios
+          </NavLink>
+          <NavLink
+            to="/mis-jornadas"
+            className={({ isActive }) =>
+              `flex flex-col items-center gap-1 py-2.5 text-xs font-medium ${
+                isActive ? "text-primary" : "text-ink-muted"
+              }`
+            }
+          >
+            <CalendarDaysIcon className="h-6 w-6" aria-hidden="true" />
+            Mis jornadas
+          </NavLink>
+          <NavLink
+            to="/mis-permisos"
+            className={({ isActive }) =>
+              `flex flex-col items-center gap-1 py-2.5 text-xs font-medium ${
+                isActive ? "text-primary" : "text-ink-muted"
+              }`
+            }
+          >
+            <ClipboardDocumentCheckIcon className="h-6 w-6" aria-hidden="true" />
+            Mis permisos
           </NavLink>
         </div>
       </nav>

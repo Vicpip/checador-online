@@ -86,6 +86,9 @@ class Ausencia(Base):
             "tipo IN ('falta','vacaciones','permiso_con_goce','permiso_sin_goce','incapacidad')",
             name="ck_ausencias_tipo",
         ),
+        CheckConstraint(
+            "estatus IN ('pendiente','aprobada','rechazada')", name="ck_ausencias_estatus"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -100,6 +103,14 @@ class Ausencia(Base):
     )
     creado_en: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    # Admin-created ausencias skip review (default 'aprobada'); técnico
+    # self-requests (routers/jornadas.py::solicitar_permiso) start 'pendiente'
+    # until an admin responds via PATCH /admin/ausencias/{id}/responder.
+    estatus: Mapped[str] = mapped_column(String(20), nullable=False, default="aprobada")
+    respuesta_notas: Mapped[str | None] = mapped_column(Text, nullable=True)
+    respondida_por: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("usuarios.id"), nullable=True
     )
 
     tecnico: Mapped["Usuario"] = relationship(foreign_keys=[tecnico_id])

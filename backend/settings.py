@@ -40,6 +40,26 @@ class Settings:
     hora_inicio_jornada: str = os.getenv("HORA_INICIO_JORNADA", "08:00")
     hora_limite_entrada: str = os.getenv("HORA_LIMITE_ENTRADA", "08:00")
 
+    # Hour (business timezone, HH:MM) at which the daily "sin check-in" alert
+    # job runs — see utils/scheduler.py. Env-only (not in the `config` DB
+    # table); changing it requires a server restart.
+    hora_limite_alerta: str = os.getenv("HORA_LIMITE_ALERTA", "09:30")
+
+    # ── Email (all optional — instances without SMTP configured simply don't
+    #    send notifications; see utils/email.py) ────────────────────────────
+    smtp_host: str | None = os.getenv("SMTP_HOST") or None
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user: str | None = os.getenv("SMTP_USER") or None
+    smtp_password: str | None = os.getenv("SMTP_PASSWORD") or None
+    smtp_from: str | None = os.getenv("SMTP_FROM") or None
+    smtp_from_name: str = os.getenv("SMTP_FROM_NAME", "Field Check")
+
+    # Comma-separated list of admin emails notified for permiso requests and
+    # the sin-check-in alert.
+    admin_emails: list[str] = [
+        e.strip() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()
+    ]
+
     # Photo storage
     fotos_base_path: str = os.getenv("FOTOS_BASE_PATH", "/var/fieldcheck/fotos")
     foto_max_width: int = int(os.getenv("FOTO_MAX_WIDTH", "1200"))

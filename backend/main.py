@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from routers import admin, auth, config, fotos, jornadas, servicios
 from settings import get_settings
+from utils.scheduler import iniciar_scheduler
 
 settings = get_settings()
 
@@ -26,6 +27,11 @@ app.include_router(servicios.router)
 app.include_router(admin.router)
 app.include_router(config.router)
 app.include_router(fotos.router)
+
+
+@app.on_event("startup")
+def _startup():
+    iniciar_scheduler()
 
 
 @app.get("/health", tags=["health"])

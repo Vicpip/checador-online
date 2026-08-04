@@ -68,6 +68,7 @@ def _to_out(config: Config) -> ConfigOut:
         admin_role_label=settings.admin_role_label,
         hora_inicio_jornada=config.hora_inicio_jornada or _parse_hora(settings.hora_inicio_jornada),
         hora_limite_entrada=config.hora_limite_entrada or _parse_hora(settings.hora_limite_entrada),
+        hora_limite_alerta=_parse_hora(settings.hora_limite_alerta),
     )
 
 

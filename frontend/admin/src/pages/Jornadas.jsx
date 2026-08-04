@@ -1,9 +1,10 @@
-import { CameraIcon, MapPinIcon } from "@heroicons/react/24/outline";
+import { CameraIcon, MapPinIcon, PencilIcon } from "@heroicons/react/24/outline";
 import { useEffect, useState } from "react";
 import api from "../api/client";
 import Badge from "../components/Badge";
 import PhotoModal from "../components/PhotoModal";
 import MapaModal from "../components/MapaModal";
+import EditarJornadaModal from "../components/EditarJornadaModal";
 import { useConfig } from "../context/ConfigContext";
 import { formatFecha, formatHora } from "../utils/formato";
 
@@ -16,22 +17,32 @@ export default function Jornadas() {
   const [loading, setLoading] = useState(true);
   const [foto, setFoto] = useState(null); // { path, title }
   const [mapaJornada, setMapaJornada] = useState(null);
+  const [editJornada, setEditJornada] = useState(null);
 
   useEffect(() => {
     api.get("/admin/tecnicos").then((res) => setTecnicos(res.data));
   }, []);
 
-  useEffect(() => {
+  function cargarJornadas() {
     setLoading(true);
     const params = { page, limit: 20 };
     if (filtros.tecnico_id) params.tecnico_id = filtros.tecnico_id;
     if (filtros.fecha_inicio) params.fecha_inicio = filtros.fecha_inicio;
     if (filtros.fecha_fin) params.fecha_fin = filtros.fecha_fin;
-    api
+    return api
       .get("/admin/jornadas", { params })
       .then((res) => setData(res.data))
       .finally(() => setLoading(false));
+  }
+
+  useEffect(() => {
+    cargarJornadas();
   }, [filtros, page]);
+
+  async function handleGuardarJornada(cambios) {
+    await api.patch(`/admin/jornadas/${editJornada.id}`, cambios);
+    await cargarJornadas();
+  }
 
   const totalPages = Math.max(1, Math.ceil(data.total / data.limit));
 
@@ -105,6 +116,7 @@ export default function Jornadas() {
                   <th className="text-left font-medium px-5 py-3">Estatus</th>
                   <th className="text-left font-medium px-5 py-3">Fotos</th>
                   <th className="text-left font-medium px-5 py-3">Ubicación</th>
+                  <th className="text-left font-medium px-5 py-3">Editar</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -162,6 +174,16 @@ export default function Jornadas() {
                         <MapPinIcon className="h-4 w-4" />
                       </button>
                     </td>
+                    <td className="px-5 py-3">
+                      <button
+                        onClick={() => setEditJornada(j)}
+                        className="p-1.5 rounded-lg hover:bg-surface-muted text-ink-muted cursor-pointer"
+                        aria-label="Editar hora de entrada y salida"
+                        title="Editar jornada"
+                      >
+                        <PencilIcon className="h-4 w-4" />
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -194,6 +216,13 @@ export default function Jornadas() {
 
       {foto && <PhotoModal relativePath={foto.path} title={foto.title} onClose={() => setFoto(null)} />}
       {mapaJornada && <MapaModal jornada={mapaJornada} onClose={() => setMapaJornada(null)} />}
+      {editJornada && (
+        <EditarJornadaModal
+          jornada={editJornada}
+          onSave={handleGuardarJornada}
+          onClose={() => setEditJornada(null)}
+        />
+      )}
     </div>
   );
 }

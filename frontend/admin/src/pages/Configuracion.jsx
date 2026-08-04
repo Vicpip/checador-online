@@ -148,6 +148,22 @@ export default function Configuracion() {
             </div>
           </div>
 
+          <div className="pt-4 border-t border-border">
+            <label className="block text-sm font-medium text-ink mb-1.5">Hora límite de alerta</label>
+            <input
+              type="time"
+              disabled
+              value={config.hora_limite_alerta.slice(0, 5)}
+              className="w-full sm:w-1/2 rounded-lg border border-border px-3 py-2.5 bg-surface-muted text-ink-muted cursor-not-allowed"
+            />
+            <p className="mt-1 text-xs text-ink-muted">
+              Hora a la que se revisa si hay {config.worker_role_label.toLowerCase()}s sin check-in
+              y se notifica por correo a los administradores. Se configura con la variable de entorno{" "}
+              <code>HORA_LIMITE_ALERTA</code> — cambiarla requiere reiniciar el servidor, no se puede
+              editar desde aquí.
+            </p>
+          </div>
+
           {error && <p role="alert" className="text-sm text-danger bg-danger/10 rounded-lg px-3 py-2">{error}</p>}
           {message && <p role="status" className="text-sm text-secondary bg-secondary/10 rounded-lg px-3 py-2">{message}</p>}
 
