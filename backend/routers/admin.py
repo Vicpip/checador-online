@@ -440,10 +440,24 @@ def tecnicos_sin_checkin_hoy(db: Session) -> list[Usuario]:
         ).all()
     }
 
+    hoy_weekday = hoy.weekday()  # 0=Lunes … 6=Domingo
+
+    tecnicos_con_horario_hoy = {
+        h.tecnico_id
+        for h in db.scalars(
+            select(Horario).where(
+                Horario.dia_semana == hoy_weekday,
+                Horario.activo == True,  # noqa: E712
+            )
+        ).all()
+    }
+
     return [
         t
         for t in tecnicos
-        if t.id not in tecnicos_con_jornada and t.id not in tecnicos_con_ausencia_aprobada
+        if t.id not in tecnicos_con_jornada
+        and t.id not in tecnicos_con_ausencia_aprobada
+        and t.id in tecnicos_con_horario_hoy
     ]
 
 
